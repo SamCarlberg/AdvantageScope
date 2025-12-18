@@ -12,6 +12,7 @@ import { SelectionMode } from "../Selection";
 import { Units } from "../units";
 import { calcAxisStepSize, clampValue, cleanFloat, scaleValue, shiftColor, ValueScaler } from "../util";
 import TabRenderer from "./TabRenderer";
+import { sort } from "mathjs";
 
 export default class LineGraphRenderer implements TabRenderer {
   private Y_STEP_TARGET_PX = 50;
@@ -146,6 +147,7 @@ export default class LineGraphRenderer implements TabRenderer {
       this.lastCursorX,
       command.leftFields.map((field) => [field.values.length, field.color, field.type, field.size]),
       command.discreteFields.map((field) => [field.values.length, field.color, field.type, field.toggleReference]),
+      command.commandScheduler,
       command.rightFields.map((field) => [field.values.length, field.color, field.type, field.size])
     ];
     let renderStateString = JSON.stringify(renderState);
@@ -166,8 +168,9 @@ export default class LineGraphRenderer implements TabRenderer {
     this.SCROLL_OVERLAY.style.top = graphTop.toString() + "px";
     let graphHeight = height - graphTop - 35;
     if (graphHeight < 1) graphHeight = 1;
-    let discreteRowCount = command.discreteFields.length + command.alerts.length;
-    let graphHeightOpen = graphHeight - discreteRowCount * 20 - (discreteRowCount > 0 ? 5 : 0);
+    let discreteRowCount = command.discreteFields.length + command.alerts.length + command.commandScheduler.reduce((a, b) => a + b.mechanisms.length, 0);
+    let commandRowCount = command.commandScheduler.map(s => s.mechanisms.length).reduce((a, b) => a + b, 0);
+    let graphHeightOpen = graphHeight - discreteRowCount * 20 - (discreteRowCount > 0 ? 5 : 0) - (commandRowCount > 0 ? 20 : 0);
     if (graphHeightOpen < 1) graphHeightOpen = 1;
 
     // Calculate Y step sizes
@@ -306,6 +309,81 @@ export default class LineGraphRenderer implements TabRenderer {
           context.fillStyle = "black";
           context.fillText(alert.text, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
         }
+      });
+    });
+
+    // Render commands
+    command.commandScheduler.forEach((scheduler) => {
+      // Draw no-requirement commands
+      let noRequirementCommands = scheduler.commands
+        .filter((c) => c.requirements.length === 0);
+      noRequirementCommands
+        .forEach((cmd, rowIndex) => {
+          // Find the number of overlapping commands to the left.
+          // This is used to determine the vertical position of the command.
+          let numOverlaps =
+            noRequirementCommands
+              .filter((c, i) => i < rowIndex)
+              .filter((c) => c.range[1] <= cmd.range[1] && c.range[1] >= cmd.range[0]).length;
+
+          let topY =
+            graphTop + graphHeight - 20 - (command.discreteFields.length + scheduler.mechanisms.length + numOverlaps) * 20;
+          let startX = scaleValue(cmd.range[0], timeRange, [graphLeft, graphLeft + graphWidth]);
+          let endX = scaleValue(cmd.range[1], timeRange, [graphLeft, graphLeft + graphWidth]);
+
+          // Draw shape
+          context.fillStyle = "#FFFFFF";
+          context.fillRect(startX, topY, endX - startX, 15);
+
+          // Draw name
+          let adjustedStartX = startX < graphLeft ? graphLeft : startX;
+          if (endX - adjustedStartX > 10) {
+            context.fillStyle = "black";
+            context.fillText(cmd.name, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
+          }
+        });
+
+      // TODO: Draw a label box for the no-requirement commands. Make sure the box is 20 px * (number of commands) high.
+
+      const mechanismColors: string[] = [
+        "#85C1E9", // Light blue
+        "#F9E79F", // Light yellow
+        "#ABEBC6", // Light green
+        "#F5B7B1", // Light red
+        "#D2B4DE", // Light purple
+        "#F8C471" // Light orange
+      ];
+
+      let sortedMechanisms = scheduler.mechanisms.sort((a, b) => a.name.localeCompare(b.name));
+
+      // Draw commands per mechanism
+      sortedMechanisms.forEach((mechanism, rowIndex) => {
+        let topY = graphTop + graphHeight - 20 - (command.discreteFields.length + rowIndex) * 20;
+
+        scheduler.commands
+          .filter((command) => command.requirements.indexOf(mechanism.name) >= 0)
+          .filter((command) => command.parentId === undefined)
+          .forEach((topLevelCommand) => {
+            let startX = scaleValue(topLevelCommand.range[0], timeRange, [graphLeft, graphLeft + graphWidth]);
+            let endX = scaleValue(topLevelCommand.range[1], timeRange, [graphLeft, graphLeft + graphWidth]);
+
+            // Draw shape
+            context.fillStyle = mechanismColors[(topLevelCommand.id ^ rowIndex) % mechanismColors.length];
+            context.fillRect(startX, topY, endX - startX, 15);
+
+            // Draw name
+            let adjustedStartX = startX < graphLeft ? graphLeft : startX;
+            if (endX - adjustedStartX > 10) {
+              context.fillStyle = "black";
+              context.fillText(topLevelCommand.name, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
+            }
+          });
+
+        // Draw a box for the mechanism name
+        context.fillStyle = "#000000";
+        context.fillRect(graphLeft, topY, 100, 15);
+        context.fillStyle = "white";
+        context.fillText(mechanism.name, graphLeft + 5, topY + 15 / 2);
       });
     });
 
@@ -701,6 +779,7 @@ export type LineGraphRendererCommand = {
   rightFields: LineGraphRendererCommand_NumericField[];
   discreteFields: LineGraphRendererCommand_DiscreteField[];
   alerts: LineGraphRendererCommand_AlertSet;
+  commandScheduler: LineGraphRenderCommand_CommandScheduler[];
 };
 
 export type LineGraphRendererCommand_NumericField = {
@@ -726,3 +805,25 @@ export type LineGraphRendererCommand_Alert = {
   text: string;
   range: [number, number];
 };
+
+export type LineGraphRenderCommand_Mechanism = {
+  name: string;
+}
+
+export type LineGraphRenderCommand_Command = {
+  /** The unique ID of the command. */
+  id: number;
+  /** The parent command ID. undefined if the command has no parent. */
+  parentId?: number;
+  /** The name of the command. */
+  name: string;
+  /** The mechanisms required by the command. */
+  requirements: string[];
+  /** The range of time covered by the command. */
+  range: [number, number];
+}
+
+export type LineGraphRenderCommand_CommandScheduler = {
+  commands: LineGraphRenderCommand_Command[];
+  mechanisms: LineGraphRenderCommand_Mechanism[];
+}

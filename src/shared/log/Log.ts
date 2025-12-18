@@ -51,6 +51,10 @@ export default class Log {
     this.enableTimestampSetCache = enableTimestampSetCache;
   }
 
+  getProtoDecoder() {
+    return this.protoDecoder;
+  }
+
   /** Checks if the field exists and registers it if necessary. */
   createBlankField(key: string, type: LoggableType) {
     if (key in this.fields) return;

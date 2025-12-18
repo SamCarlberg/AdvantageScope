@@ -144,6 +144,16 @@ export const LineGraphController_DiscreteConfig: SourceListConfig = {
       sourceTypes: ["Alerts"],
       showDocs: true,
       options: []
+    },
+    {
+      key: "scheduler",
+      display: "Command Scheduler",
+      symbol: "list.bullet",
+      showInTypeName: false,
+      color: "#aa00ff",
+      sourceTypes: ["Scheduler"],
+      showDocs: true,
+      options: []
     }
   ]
 };

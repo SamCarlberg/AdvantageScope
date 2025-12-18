@@ -11,6 +11,7 @@ import { SourceListState } from "../../shared/SourceListConfig";
 import { AKIT_TIMESTAMP_KEYS, getEnabledKey, getLogValueText } from "../../shared/log/LogUtil";
 import { LogValueSetNumber } from "../../shared/log/LogValueSets";
 import {
+  LineGraphRenderCommand_CommandScheduler,
   LineGraphRendererCommand,
   LineGraphRendererCommand_Alert,
   LineGraphRendererCommand_AlertSet,
@@ -22,6 +23,8 @@ import { clampValue, createUUID, scaleValueClamped } from "../../shared/util";
 import SourceList from "../SourceList";
 import { LineGraphController_DiscreteConfig, LineGraphController_NumericConfig } from "./LineGraphController_Config";
 import TabController from "./TabController";
+import { util } from "protobufjs";
+import float = util.float;
 
 type NumericCommandCacheValue = LineGraphRendererCommand_NumericField & { hasUnit: boolean };
 
@@ -426,6 +429,7 @@ export default class LineGraphController implements TabController {
     let leftFieldsCommand: LineGraphRendererCommand_NumericField[] = [];
     let rightFieldsCommand: LineGraphRendererCommand_NumericField[] = [];
     let discreteFieldsCommand: LineGraphRendererCommand_DiscreteField[] = [];
+    let commandSchedulerCommand: LineGraphRenderCommand_CommandScheduler[] = [];
     const timeRange = window.selection.getTimelineRange();
 
     // Add numeric fields
@@ -655,7 +659,9 @@ export default class LineGraphController implements TabController {
 
     // Add discrete fields
     this.discreteSourceList.getState().forEach((fieldItem) => {
-      if (!fieldItem.visible || fieldItem.type === "alerts") return;
+      if (!fieldItem.visible || fieldItem.type === "alerts" || window.log.getStructuredType(fieldItem.logKey) === "Scheduler") {
+        return;
+      }
 
       let data = window.log.getRange(fieldItem.logKey, timeRange[0], timeRange[1]);
       if (data === undefined) return;
@@ -761,6 +767,93 @@ export default class LineGraphController implements TabController {
     );
     alerts = alerts.filter((row) => row.length > 0);
 
+    // Process commands
+    this.discreteSourceList.getState().forEach((fieldItem) => {
+      if (!fieldItem.visible) return;
+      if (window.log.getStructuredType(fieldItem.logKey) !== "Scheduler") {
+        return;
+      }
+
+      let rawScheduler = window.log.getField(fieldItem.logKey);
+      if (rawScheduler === null) {
+        return;
+      }
+
+      let commandScheduler: LineGraphRenderCommand_CommandScheduler = {
+        commands: [],
+        mechanisms: []
+      };
+      commandSchedulerCommand.push(commandScheduler);
+
+      let rawSchedulerData = window.log.getField(fieldItem.logKey)?.getRaw(timeRange[0], timeRange[1]);
+      if (!rawSchedulerData) {
+        // no commands, scheduler is empty
+        return;
+      }
+
+      const mechColorList = [
+        "#000000",
+        "#0000FF",
+        "#00FF00",
+        "#FF0000",
+        "#FFFF00",
+        "#FF00FF"
+      ];
+      let mechColorIndex = 0;
+
+      rawSchedulerData?.values.forEach((rawBytes, index) => {
+        const timestamp = rawSchedulerData.timestamps[index];
+
+        type RawMechanism = {
+          name: string;
+        };
+        type RawCommand = {
+          name: string;
+          id: number;
+          parent_id?: number;
+          requirements: RawMechanism[];
+          last_time_ms: number;
+          total_time_ms: number;
+        };
+        type RawScheduler = {
+          running_commands: RawCommand[];
+          queued_commands: RawCommand[]; // usually empty unless people are logging in the middle of a scheduler run
+          mechanisms: RawMechanism[];
+          last_time_ms: number;
+        };
+
+        let fullSchedulerData = window.log.getProtoDecoder().decode("ProtobufScheduler", rawBytes).data as RawScheduler;
+        fullSchedulerData.mechanisms.forEach((mech) => {
+          if (!commandScheduler.mechanisms.find((m) => m.name === mech.name)) {
+            commandScheduler.mechanisms.push({
+              name: mech.name
+            });
+          }
+        });
+
+        // Identify new commands or bump the end timestamp of current ones
+        fullSchedulerData.running_commands.forEach((command) => {
+          let prevRun = commandScheduler.commands.find((c) => c.id === command.id);
+          if (prevRun) {
+            // Existing command, bump the end timestamp but do not otherwise modify
+            prevRun.range[1] = timestamp;
+          } else {
+            // New command
+            commandScheduler.commands.push({
+              id: command.id,
+              parentId: command.parent_id,
+              name: command.name,
+              range: [timestamp, timestamp],
+              requirements: command.requirements.map((r) => r.name)
+            });
+          }
+        });
+      });
+    });
+
+    // Remove offscreen commands
+    // TODO
+
     // Get numeric ranges
     let calcRange = (dataRange: [number, number], lockedRange: [number, number] | null): [number, number] => {
       let range: [number, number];
@@ -808,6 +901,7 @@ export default class LineGraphController implements TabController {
       leftFields: leftFieldsCommand,
       rightFields: rightFieldsCommand,
       discreteFields: discreteFieldsCommand,
+      commandScheduler: commandSchedulerCommand,
       alerts: alerts
     };
   }

@@ -1193,6 +1193,25 @@ export default class SourceList {
               infoCount.toString() +
               " info" +
               (infoCount === 1 ? "" : "s");
+          } else if (structuredType === "Scheduler") {
+              let commandCount: number = getOrDefault(
+                window.log,
+                state.logKey + "/running_commands/length",
+                LoggableType.Number,
+                time,
+                0
+              );
+              // Don't bother getting the number of queued commands, since it can only be shown if the scheduler
+              // is logged in the middle of a run call; ie just after commands are added to the queue and just before
+              // they get promoted to the running set.
+              let mechanismCount: number = getOrDefault(
+                window.log,
+                state.logKey + "/mechanisms/length",
+                LoggableType.Number,
+                time,
+                0
+              );
+              text = `${commandCount.toString()} command${commandCount === 1 ? "" : "s"}, ${mechanismCount.toString()} mechanism${mechanismCount === 1 ? "" : "s"}`;
           } else if (
             logType === LoggableType.BooleanArray ||
             logType === LoggableType.NumberArray ||
