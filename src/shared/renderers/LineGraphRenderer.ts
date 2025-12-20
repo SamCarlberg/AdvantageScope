@@ -12,7 +12,7 @@ import { SelectionMode } from "../Selection";
 import { Units } from "../units";
 import { calcAxisStepSize, clampValue, cleanFloat, scaleValue, shiftColor, ValueScaler } from "../util";
 import TabRenderer from "./TabRenderer";
-import { sort } from "mathjs";
+import { LogCommand, LogCommandMechanism } from "../log/LogValueSets";
 
 export default class LineGraphRenderer implements TabRenderer {
   private Y_STEP_TARGET_PX = 50;
@@ -314,36 +314,7 @@ export default class LineGraphRenderer implements TabRenderer {
 
     // Render commands
     command.commandScheduler.forEach((scheduler) => {
-      // Draw no-requirement commands
-      let noRequirementCommands = scheduler.commands
-        .filter((c) => c.requirements.length === 0);
-      noRequirementCommands
-        .forEach((cmd, rowIndex) => {
-          // Find the number of overlapping commands to the left.
-          // This is used to determine the vertical position of the command.
-          let numOverlaps =
-            noRequirementCommands
-              .filter((c, i) => i < rowIndex)
-              .filter((c) => c.range[1] <= cmd.range[1] && c.range[1] >= cmd.range[0]).length;
-
-          let topY =
-            graphTop + graphHeight - 20 - (command.discreteFields.length + scheduler.mechanisms.length + numOverlaps) * 20;
-          let startX = scaleValue(cmd.range[0], timeRange, [graphLeft, graphLeft + graphWidth]);
-          let endX = scaleValue(cmd.range[1], timeRange, [graphLeft, graphLeft + graphWidth]);
-
-          // Draw shape
-          context.fillStyle = "#FFFFFF";
-          context.fillRect(startX, topY, endX - startX, 15);
-
-          // Draw name
-          let adjustedStartX = startX < graphLeft ? graphLeft : startX;
-          if (endX - adjustedStartX > 10) {
-            context.fillStyle = "black";
-            context.fillText(cmd.name, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
-          }
-        });
-
-      // TODO: Draw a label box for the no-requirement commands. Make sure the box is 20 px * (number of commands) high.
+      // TODO: Draw no-requirement commands
 
       const mechanismColors: string[] = [
         "#85C1E9", // Light blue
@@ -351,39 +322,86 @@ export default class LineGraphRenderer implements TabRenderer {
         "#ABEBC6", // Light green
         "#F5B7B1", // Light red
         "#D2B4DE", // Light purple
-        "#F8C471" // Light orange
+        "#F8C471", // Light orange
+        "#A8E6CF", // Light mint
+        "#FFD3B6", // Light peach
+        "#FFAAA5", // Light coral
+        "#B4E7F5", // Light sky blue
+        "#E6B3E0", // Light lavender
+        "#FFF4A3", // Light lemon
+        "#C5E1A5", // Light lime
+        "#FFCCBC", // Light salmon
+        "#B3E5FC", // Light aqua
+        "#D7CCC8" // Light beige
       ];
 
-      let sortedMechanisms = scheduler.mechanisms.sort((a, b) => a.name.localeCompare(b.name));
+      const getTotalDescendantCount = (command: LogCommand): number => {
+        let count = command.children.length;
+        for (let child of command.children) {
+          count += getTotalDescendantCount(child);
+        }
+        return count;
+      }
 
-      // Draw commands per mechanism
-      sortedMechanisms.forEach((mechanism, rowIndex) => {
-        let topY = graphTop + graphHeight - 20 - (command.discreteFields.length + rowIndex) * 20;
+      let commandRowOffset = 0;
+      scheduler.mechanisms.sort((a, b) => -a.name.localeCompare(b.name)).forEach((mechanism, rowIndex) => {
+        let maxDepth = Math.max(
+          1,
+          ...mechanism.commands
+            .filter((command) => !command.parentId)
+            .map((rootCommand) => 1 + getTotalDescendantCount(rootCommand))
+        );
+        let rowTotalHeight = maxDepth * 20;
+        commandRowOffset += rowTotalHeight;
+        let rowTopY =
+          graphTop + graphHeight - (command.discreteFields.length - command.alerts.length + rowIndex) * 20 - commandRowOffset;
 
-        scheduler.commands
-          .filter((command) => command.requirements.indexOf(mechanism.name) >= 0)
-          .filter((command) => command.parentId === undefined)
-          .forEach((topLevelCommand) => {
-            let startX = scaleValue(topLevelCommand.range[0], timeRange, [graphLeft, graphLeft + graphWidth]);
-            let endX = scaleValue(topLevelCommand.range[1], timeRange, [graphLeft, graphLeft + graphWidth]);
+        if (mechanism.commands.length === 0) {
+          // Nothing to do
+          return;
+        }
 
-            // Draw shape
-            context.fillStyle = mechanismColors[(topLevelCommand.id ^ rowIndex) % mechanismColors.length];
-            context.fillRect(startX, topY, endX - startX, 15);
+        let commandRowIndex = 0;
+        const paintCommandBox = (command: LogCommand) => {
+          let startX = scaleValue(command.range[0], timeRange, [graphLeft, graphLeft + graphWidth]);
+          let endX = scaleValue(command.range[1], timeRange, [graphLeft, graphLeft + graphWidth]);
+          let topY = rowTopY + commandRowIndex * 20;
+          let descendantCount = getTotalDescendantCount(command);
+          let height = (descendantCount + 1) * 20;
 
-            // Draw name
-            let adjustedStartX = startX < graphLeft ? graphLeft : startX;
-            if (endX - adjustedStartX > 10) {
-              context.fillStyle = "black";
-              context.fillText(topLevelCommand.name, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
-            }
+          // Border box
+          context.fillStyle = "#000000";
+          context.fillRect(startX, topY, endX - startX, height);
+          // Draw box
+          context.fillStyle = mechanismColors[(command.id) % mechanismColors.length];
+          context.fillRect(startX + 1, topY + 1, endX - startX - 2, height - 2);
+
+          // Draw name
+          let adjustedStartX = startX < graphLeft ? graphLeft : startX;
+          if (endX - adjustedStartX > 10) {
+            context.fillStyle = "black";
+            context.fillText(command.name, adjustedStartX + 5, topY + 15 / 2, endX - adjustedStartX - 10);
+          }
+
+          commandRowIndex++;
+
+          // Draw children
+          command.children.forEach((child) => {
+            paintCommandBox(child);
           });
+        };
+
+        // Paint from each root command
+        mechanism.commands.filter(command => !command.parentId).forEach(rootCommand => {
+          commandRowIndex = 0;
+          paintCommandBox(rootCommand);
+        })
 
         // Draw a box for the mechanism name
-        context.fillStyle = "#000000";
-        context.fillRect(graphLeft, topY, 100, 15);
+        context.fillStyle = "#000000AA";
+        context.fillRect(graphLeft, rowTopY, 100, rowTotalHeight);
         context.fillStyle = "white";
-        context.fillText(mechanism.name, graphLeft + 5, topY + 15 / 2);
+        context.fillText(mechanism.name, graphLeft + 5, rowTopY + 15 / 2);
       });
     });
 
@@ -806,24 +824,7 @@ export type LineGraphRendererCommand_Alert = {
   range: [number, number];
 };
 
-export type LineGraphRenderCommand_Mechanism = {
-  name: string;
-}
-
-export type LineGraphRenderCommand_Command = {
-  /** The unique ID of the command. */
-  id: number;
-  /** The parent command ID. undefined if the command has no parent. */
-  parentId?: number;
-  /** The name of the command. */
-  name: string;
-  /** The mechanisms required by the command. */
-  requirements: string[];
-  /** The range of time covered by the command. */
-  range: [number, number];
-}
-
 export type LineGraphRenderCommand_CommandScheduler = {
-  commands: LineGraphRenderCommand_Command[];
-  mechanisms: LineGraphRenderCommand_Mechanism[];
+  commands: LogCommand[];
+  mechanisms: LogCommandMechanism[];
 }

@@ -9,7 +9,7 @@ import { ensureThemeContrast } from "../../shared/Colors";
 import LineGraphFilter from "../../shared/LineGraphFilter";
 import { SourceListState } from "../../shared/SourceListConfig";
 import { AKIT_TIMESTAMP_KEYS, getEnabledKey, getLogValueText } from "../../shared/log/LogUtil";
-import { LogValueSetNumber } from "../../shared/log/LogValueSets";
+import { LogCommandMechanism, LogValueSetNumber } from "../../shared/log/LogValueSets";
 import {
   LineGraphRenderCommand_CommandScheduler,
   LineGraphRendererCommand,
@@ -785,70 +785,17 @@ export default class LineGraphController implements TabController {
       };
       commandSchedulerCommand.push(commandScheduler);
 
-      let rawSchedulerData = window.log.getField(fieldItem.logKey)?.getRaw(timeRange[0], timeRange[1]);
-      if (!rawSchedulerData) {
-        // no commands, scheduler is empty
-        return;
-      }
-
-      const mechColorList = [
-        "#000000",
-        "#0000FF",
-        "#00FF00",
-        "#FF0000",
-        "#FFFF00",
-        "#FF00FF"
-      ];
-      let mechColorIndex = 0;
-
-      rawSchedulerData?.values.forEach((rawBytes, index) => {
-        const timestamp = rawSchedulerData.timestamps[index];
-
-        type RawMechanism = {
-          name: string;
-        };
-        type RawCommand = {
-          name: string;
-          id: number;
-          parent_id?: number;
-          requirements: RawMechanism[];
-          last_time_ms: number;
-          total_time_ms: number;
-        };
-        type RawScheduler = {
-          running_commands: RawCommand[];
-          queued_commands: RawCommand[]; // usually empty unless people are logging in the middle of a scheduler run
-          mechanisms: RawMechanism[];
-          last_time_ms: number;
-        };
-
-        let fullSchedulerData = window.log.getProtoDecoder().decode("ProtobufScheduler", rawBytes).data as RawScheduler;
-        fullSchedulerData.mechanisms.forEach((mech) => {
-          if (!commandScheduler.mechanisms.find((m) => m.name === mech.name)) {
-            commandScheduler.mechanisms.push({
-              name: mech.name
-            });
-          }
+      window.log
+        .getMechanisms(fieldItem.logKey)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((mechanism) => {
+          // Work on a copy of the data so changes in the log don't affect the renderer
+          const mechCopy: LogCommandMechanism = {
+            name: mechanism.name,
+            commands: window.log.getCommands(fieldItem.logKey, mechanism.name, timeRange[0], timeRange[1])
+          };
+          commandScheduler.mechanisms.push(mechCopy);
         });
-
-        // Identify new commands or bump the end timestamp of current ones
-        fullSchedulerData.running_commands.forEach((command) => {
-          let prevRun = commandScheduler.commands.find((c) => c.id === command.id);
-          if (prevRun) {
-            // Existing command, bump the end timestamp but do not otherwise modify
-            prevRun.range[1] = timestamp;
-          } else {
-            // New command
-            commandScheduler.commands.push({
-              id: command.id,
-              parentId: command.parent_id,
-              name: command.name,
-              range: [timestamp, timestamp],
-              requirements: command.requirements.map((r) => r.name)
-            });
-          }
-        });
-      });
     });
 
     // Remove offscreen commands
